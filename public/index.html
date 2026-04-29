@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Song Finder</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, Helvetica, sans-serif;
+        line-height: 1.5;
+        color: #1f2933;
+        background: #f7f5f0;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      main {
+        width: min(100%, 640px);
+        background: #ffffff;
+        border: 1px solid #d8dee4;
+        border-radius: 8px;
+        padding: 32px;
+        box-shadow: 0 16px 40px rgba(31, 41, 51, 0.12);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 2rem;
+      }
+
+      p {
+        margin: 0 0 24px;
+        color: #52606d;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+
+      button {
+        min-height: 44px;
+        border: 0;
+        border-radius: 6px;
+        padding: 0 18px;
+        font: inherit;
+        font-weight: 700;
+        color: #ffffff;
+        background: #0f766e;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        color: #1f2933;
+        background: #e4e7eb;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      audio {
+        width: 100%;
+        margin-bottom: 20px;
+      }
+
+      .status {
+        min-height: 52px;
+        border-radius: 6px;
+        padding: 14px 16px;
+        background: #eef2f7;
+        color: #323f4b;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Song Finder</h1>
+      <p>Hum or sing a few seconds, then send the clip for recognition.</p>
+
+      <div class="controls">
+        <button id="recordButton" type="button">Start recording</button>
+        <button id="stopButton" class="secondary" type="button" disabled>Stop</button>
+        <button id="identifyButton" type="button" disabled>Identify song</button>
+      </div>
+
+      <audio id="preview" controls hidden></audio>
+      <div id="status" class="status">Ready when you are.</div>
+    </main>
+
+    <script>
+      const recordButton = document.querySelector("#recordButton");
+      const stopButton = document.querySelector("#stopButton");
+      const identifyButton = document.querySelector("#identifyButton");
+      const preview = document.querySelector("#preview");
+      const statusBox = document.querySelector("#status");
+
+      let mediaRecorder;
+      let audioChunks = [];
+      let recordingBlob;
+
+      const setStatus = (message) => {
+        statusBox.textContent = message;
+      };
+
+      recordButton.addEventListener("click", async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioChunks = [];
+          recordingBlob = null;
+          mediaRecorder = new MediaRecorder(stream);
+
+          mediaRecorder.addEventListener("dataavailable", (event) => {
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
+          });
+
+          mediaRecorder.addEventListener("stop", () => {
+            recordingBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+            preview.src = URL.createObjectURL(recordingBlob);
+            preview.hidden = false;
+            identifyButton.disabled = false;
+            stream.getTracks().forEach((track) => track.stop());
+            setStatus("Recording captured. Ready to identify.");
+          });
+
+          mediaRecorder.start();
+          recordButton.disabled = true;
+          stopButton.disabled = false;
+          identifyButton.disabled = true;
+          setStatus("Listening...");
+        } catch (error) {
+          setStatus("Microphone access was blocked or unavailable.");
+        }
+      });
+
+      stopButton.addEventListener("click", () => {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+          recordButton.disabled = false;
+          stopButton.disabled = true;
+        }
+      });
+
+      identifyButton.addEventListener("click", async () => {
+        if (!recordingBlob) {
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("audio", recordingBlob, "recording.webm");
+        setStatus("Sending audio for recognition...");
+        identifyButton.disabled = true;
+
+        try {
+          const response = await fetch("/api/recognize", {
+            method: "POST",
+            body: formData,
+          });
+          const result = await response.json();
+
+          if (!response.ok) {
+            throw new Error(result.error || "Recognition failed.");
+          }
+
+          setStatus(JSON.stringify(result, null, 2));
+        } catch (error) {
+          setStatus(error.message);
+        } finally {
+          identifyButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
