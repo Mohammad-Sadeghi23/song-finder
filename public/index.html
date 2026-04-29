@@ -23,6 +23,9 @@
         display: grid;
         place-items: center;
         padding: 24px;
+        background:
+          linear-gradient(135deg, rgba(15, 118, 110, 0.08), transparent 38%),
+          #f7f5f0;
       }
 
       main {
@@ -44,28 +47,30 @@
         color: #52606d;
       }
 
-      .controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-bottom: 24px;
+      .recorder {
+        display: grid;
+        gap: 18px;
       }
 
       button {
-        min-height: 44px;
+        min-height: 56px;
         border: 0;
         border-radius: 6px;
-        padding: 0 18px;
+        padding: 0 22px;
         font: inherit;
+        font-size: 1.05rem;
         font-weight: 700;
         color: #ffffff;
         background: #0f766e;
         cursor: pointer;
+        transition:
+          background 160ms ease,
+          transform 160ms ease;
       }
 
-      button.secondary {
-        color: #1f2933;
-        background: #e4e7eb;
+      button:hover:not(:disabled) {
+        background: #115e59;
+        transform: translateY(-1px);
       }
 
       button:disabled {
@@ -75,54 +80,441 @@
 
       audio {
         width: 100%;
-        margin-bottom: 20px;
+      }
+
+      canvas {
+        width: 100%;
+        height: 120px;
+        display: block;
+        border: 1px solid #d8dee4;
+        border-radius: 6px;
+        background: #fbfcfd;
+      }
+
+      .meter {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #d9e2ec;
+      }
+
+      .meter span {
+        display: block;
+        width: 0%;
+        height: 100%;
+        background: #0f766e;
+        transition: width 180ms linear;
       }
 
       .status {
         min-height: 52px;
+        white-space: pre-wrap;
         border-radius: 6px;
         padding: 14px 16px;
         background: #eef2f7;
         color: #323f4b;
+      }
+
+      .result {
+        display: none;
+        border: 1px solid #d8dee4;
+        border-radius: 8px;
+        padding: 18px;
+        background: #ffffff;
+      }
+
+      .result.visible {
+        display: grid;
+        gap: 14px;
+      }
+
+      .result h2 {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+
+      .result p {
+        margin: 0;
+      }
+
+      .match-list {
+        display: grid;
+        gap: 14px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .match {
+        display: grid;
+        gap: 10px;
+        border-top: 1px solid #e4e7eb;
+        padding-top: 14px;
+      }
+
+      .match:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .match-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #1f2933;
+      }
+
+      .match-artist,
+      .confidence-label {
+        margin: 0;
+        color: #52606d;
+      }
+
+      .confidence-bar {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #d9e2ec;
+      }
+
+      .confidence-bar span {
+        display: block;
+        width: var(--confidence);
+        height: 100%;
+        background: #0f766e;
+      }
+
+      .spotify-link {
+        width: fit-content;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 6px;
+        padding: 0 18px;
+        font-weight: 700;
+        color: #ffffff;
+        background: #1db954;
+        text-decoration: none;
+      }
+
+      .spotify-link:hover {
+        background: #169c46;
       }
     </style>
   </head>
   <body>
     <main>
       <h1>Song Finder</h1>
-      <p>Hum or sing a few seconds, then send the clip for recognition.</p>
+      <p>Hum or sing for up to 10 seconds. Recording stops and uploads automatically.</p>
 
-      <div class="controls">
-        <button id="recordButton" type="button">Start recording</button>
-        <button id="stopButton" class="secondary" type="button" disabled>Stop</button>
-        <button id="identifyButton" type="button" disabled>Identify song</button>
+      <div class="recorder">
+        <button id="recordButton" type="button">Record</button>
+        <canvas id="waveform" width="960" height="240" aria-label="Live audio waveform"></canvas>
+        <div class="meter" aria-hidden="true">
+          <span id="progress"></span>
+        </div>
+        <audio id="preview" controls hidden></audio>
+        <div id="status" class="status">Ready when you are.</div>
+        <section id="result" class="result" aria-live="polite"></section>
       </div>
-
-      <audio id="preview" controls hidden></audio>
-      <div id="status" class="status">Ready when you are.</div>
     </main>
 
     <script>
       const recordButton = document.querySelector("#recordButton");
-      const stopButton = document.querySelector("#stopButton");
-      const identifyButton = document.querySelector("#identifyButton");
       const preview = document.querySelector("#preview");
+      const progress = document.querySelector("#progress");
       const statusBox = document.querySelector("#status");
-
-      let mediaRecorder;
-      let audioChunks = [];
-      let recordingBlob;
+      const resultBox = document.querySelector("#result");
+      const waveform = document.querySelector("#waveform");
+      const waveformContext = waveform.getContext("2d");
+      const maxRecordingTime = 10000;
 
       const setStatus = (message) => {
         statusBox.textContent = message;
       };
 
+      const clearResult = () => {
+        resultBox.classList.remove("visible");
+        resultBox.replaceChildren();
+      };
+
+      const showNoMatch = () => {
+        resultBox.classList.add("visible");
+        resultBox.replaceChildren();
+
+        const heading = document.createElement("h2");
+        heading.textContent = "No match found";
+
+        const message = document.createElement("p");
+        message.textContent = "No match found. Try humming a little louder or recording a more recognizable part of the song.";
+
+        resultBox.append(heading, message);
+      };
+
+      const getConfidence = (match) => {
+        const rawConfidence = Number.parseFloat(match.confidence);
+        const rawScore = Number.parseFloat(match.score);
+        const value = Number.isFinite(rawConfidence) ? rawConfidence : rawScore;
+        const percentage = value > 0 && value <= 1 ? value * 100 : value;
+
+        return Math.max(0, Math.min(Math.round(percentage || 0), 100));
+      };
+
+      const showMatches = (matches) => {
+        resultBox.classList.add("visible");
+        resultBox.replaceChildren();
+
+        const heading = document.createElement("h2");
+        heading.textContent = "Top matches";
+
+        const list = document.createElement("ol");
+        list.className = "match-list";
+
+        matches.slice(0, 5).forEach((match) => {
+          const confidence = getConfidence(match);
+          const item = document.createElement("li");
+          item.className = "match";
+
+          const title = document.createElement("p");
+          title.className = "match-title";
+          title.textContent = match.title || "Unknown title";
+
+          const artist = document.createElement("p");
+          artist.className = "match-artist";
+          artist.textContent = match.artist || "Unknown artist";
+
+          const confidenceLabel = document.createElement("p");
+          confidenceLabel.className = "confidence-label";
+          confidenceLabel.textContent = `Match confidence: ${confidence}%`;
+
+          const confidenceBar = document.createElement("div");
+          confidenceBar.className = "confidence-bar";
+          confidenceBar.setAttribute("aria-hidden", "true");
+
+          const confidenceFill = document.createElement("span");
+          confidenceFill.style.setProperty("--confidence", `${confidence}%`);
+          confidenceBar.append(confidenceFill);
+
+          item.append(title, artist, confidenceLabel, confidenceBar);
+
+          if (match.spotifyUrl) {
+            const spotifyLink = document.createElement("a");
+            spotifyLink.className = "spotify-link";
+            spotifyLink.href = match.spotifyUrl;
+            spotifyLink.target = "_blank";
+            spotifyLink.rel = "noopener noreferrer";
+            spotifyLink.textContent = "Open in Spotify";
+            item.append(spotifyLink);
+          }
+
+          list.append(item);
+        });
+
+        resultBox.append(heading, list);
+      };
+
+      const drawIdleWaveform = () => {
+        const { width, height } = waveform;
+        waveformContext.clearRect(0, 0, width, height);
+        waveformContext.strokeStyle = "#9fb3c8";
+        waveformContext.lineWidth = 3;
+        waveformContext.beginPath();
+        waveformContext.moveTo(0, height / 2);
+        waveformContext.lineTo(width, height / 2);
+        waveformContext.stroke();
+      };
+
+      const getMicrophoneConstraints = () => ({
+        audio: {
+          channelCount: 1,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: true,
+        },
+      });
+
+      const drawWaveformHistory = (samples, maxAmplitude = 0.08) => {
+        const { width, height } = waveform;
+        const centerY = height / 2;
+        const scale = Math.max(maxAmplitude, 0.025);
+
+        waveformContext.clearRect(0, 0, width, height);
+        waveformContext.strokeStyle = "#d9e2ec";
+        waveformContext.lineWidth = 2;
+        waveformContext.beginPath();
+        waveformContext.moveTo(0, centerY);
+        waveformContext.lineTo(width, centerY);
+        waveformContext.stroke();
+
+        if (!samples.length) {
+          return;
+        }
+
+        waveformContext.strokeStyle = "#0f766e";
+        waveformContext.lineWidth = 3;
+        waveformContext.beginPath();
+
+        samples.forEach((sample, index) => {
+          const x = (sample.elapsed / maxRecordingTime) * width;
+          const normalizedAmplitude = Math.sqrt(Math.min(sample.amplitude / scale, 1));
+          const y = centerY - normalizedAmplitude * centerY * 0.88;
+
+          if (index === 0) {
+            waveformContext.moveTo(x, y);
+          } else {
+            waveformContext.lineTo(x, y);
+          }
+        });
+
+        samples
+          .slice()
+          .reverse()
+          .forEach((sample) => {
+            const x = (sample.elapsed / maxRecordingTime) * width;
+            const normalizedAmplitude = Math.sqrt(Math.min(sample.amplitude / scale, 1));
+            const y = centerY + normalizedAmplitude * centerY * 0.88;
+            waveformContext.lineTo(x, y);
+          });
+
+        waveformContext.closePath();
+        waveformContext.fillStyle = "rgba(15, 118, 110, 0.16)";
+        waveformContext.fill();
+        waveformContext.stroke();
+      };
+
+      const startWaveform = (stream, startedAt) => {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AudioContextClass();
+        const analyser = audioContext.createAnalyser();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser.fftSize = 4096;
+        analyser.smoothingTimeConstant = 0.2;
+
+        const data = new Float32Array(analyser.fftSize);
+        const samples = [];
+        let animationFrame;
+        let active = true;
+        let maxAmplitude = 0.08;
+
+        source.connect(analyser);
+        audioContext.resume();
+
+        const draw = () => {
+          if (!active) {
+            return;
+          }
+
+          analyser.getFloatTimeDomainData(data);
+          const elapsed = Math.min(Date.now() - startedAt, maxRecordingTime);
+          let peak = 0;
+          let sumSquares = 0;
+
+          data.forEach((value) => {
+            const absoluteValue = Math.abs(value);
+            peak = Math.max(peak, absoluteValue);
+            sumSquares += value * value;
+          });
+
+          const rms = Math.sqrt(sumSquares / data.length);
+          const amplitude = Math.max(rms * 2.6, peak * 0.7);
+          maxAmplitude = Math.max(maxAmplitude * 0.995, amplitude);
+
+          samples.push({
+            elapsed,
+            amplitude,
+          });
+
+          while (samples.length > 0 && samples[0].elapsed < elapsed - maxRecordingTime) {
+            samples.shift();
+          }
+
+          drawWaveformHistory(samples, maxAmplitude);
+          animationFrame = requestAnimationFrame(draw);
+        };
+
+        draw();
+
+        return () => {
+          active = false;
+          cancelAnimationFrame(animationFrame);
+          source.disconnect();
+          audioContext.close();
+          drawWaveformHistory(samples, maxAmplitude);
+        };
+      };
+
+      const pickMimeType = () => {
+        const types = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/mp4",
+          "audio/ogg;codecs=opus",
+        ];
+
+        return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+      };
+
+      const uploadRecording = async (blob) => {
+        const formData = new FormData();
+        const extension = blob.type.includes("mp4") ? "m4a" : "webm";
+        formData.append("audio", blob, `recording.${extension}`);
+        setStatus("Sending audio for recognition...");
+
+        const response = await fetch("/identify", {
+          method: "POST",
+          body: formData,
+        });
+        const result = await response.json();
+
+        if (response.status === 404) {
+          showNoMatch();
+          setStatus("No match found.");
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(result.error || "Recognition failed.");
+        }
+
+        const matches = Array.isArray(result.matches) ? result.matches : [result];
+        const visibleMatches = matches.filter((match) => match.title || match.artist);
+
+        if (!visibleMatches.length) {
+          showNoMatch();
+          setStatus("No match found.");
+          return;
+        }
+
+        showMatches(visibleMatches);
+        setStatus("Matches found.");
+      };
+
       recordButton.addEventListener("click", async () => {
+        if (!navigator.mediaDevices || !window.MediaRecorder) {
+          setStatus("Audio recording is not supported in this browser.");
+          return;
+        }
+
+        recordButton.disabled = true;
+        recordButton.textContent = "Recording...";
+        progress.style.width = "0%";
+        drawIdleWaveform();
+        clearResult();
+
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          audioChunks = [];
-          recordingBlob = null;
-          mediaRecorder = new MediaRecorder(stream);
+          const stream = await navigator.mediaDevices.getUserMedia(
+            getMicrophoneConstraints()
+          );
+          const audioChunks = [];
+          const mimeType = pickMimeType();
+          const mediaRecorder = new MediaRecorder(
+            stream,
+            mimeType ? { mimeType } : undefined
+          );
+          const startedAt = Date.now();
+          let progressTimer;
+          const stopWaveform = startWaveform(stream, startedAt);
 
           mediaRecorder.addEventListener("dataavailable", (event) => {
             if (event.data.size > 0) {
@@ -130,61 +522,52 @@
             }
           });
 
-          mediaRecorder.addEventListener("stop", () => {
-            recordingBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+          mediaRecorder.addEventListener("stop", async () => {
+            clearInterval(progressTimer);
+            progress.style.width = "100%";
+            stopWaveform();
+            stream.getTracks().forEach((track) => track.stop());
+
+            const recordingBlob = new Blob(audioChunks, {
+              type: mediaRecorder.mimeType || "audio/webm",
+            });
+
             preview.src = URL.createObjectURL(recordingBlob);
             preview.hidden = false;
-            identifyButton.disabled = false;
-            stream.getTracks().forEach((track) => track.stop());
-            setStatus("Recording captured. Ready to identify.");
+
+            try {
+              await uploadRecording(recordingBlob);
+            } catch (error) {
+              setStatus(error.message);
+            } finally {
+              recordButton.disabled = false;
+              recordButton.textContent = "Record again";
+            }
           });
 
           mediaRecorder.start();
-          recordButton.disabled = true;
-          stopButton.disabled = false;
-          identifyButton.disabled = true;
           setStatus("Listening...");
+
+          progressTimer = setInterval(() => {
+            const elapsed = Date.now() - startedAt;
+            const percent = Math.min((elapsed / maxRecordingTime) * 100, 100);
+            progress.style.width = `${percent}%`;
+          }, 100);
+
+          setTimeout(() => {
+            if (mediaRecorder.state === "recording") {
+              mediaRecorder.stop();
+            }
+          }, maxRecordingTime);
         } catch (error) {
+          recordButton.disabled = false;
+          recordButton.textContent = "Record";
+          progress.style.width = "0%";
           setStatus("Microphone access was blocked or unavailable.");
         }
       });
 
-      stopButton.addEventListener("click", () => {
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
-          mediaRecorder.stop();
-          recordButton.disabled = false;
-          stopButton.disabled = true;
-        }
-      });
-
-      identifyButton.addEventListener("click", async () => {
-        if (!recordingBlob) {
-          return;
-        }
-
-        const formData = new FormData();
-        formData.append("audio", recordingBlob, "recording.webm");
-        setStatus("Sending audio for recognition...");
-        identifyButton.disabled = true;
-
-        try {
-          const response = await fetch("/api/recognize", {
-            method: "POST",
-            body: formData,
-          });
-          const result = await response.json();
-
-          if (!response.ok) {
-            throw new Error(result.error || "Recognition failed.");
-          }
-
-          setStatus(JSON.stringify(result, null, 2));
-        } catch (error) {
-          setStatus(error.message);
-        } finally {
-          identifyButton.disabled = false;
-        }
-      });
+      drawIdleWaveform();
     </script>
   </body>
 </html>
